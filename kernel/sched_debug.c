@@ -1,5 +1,4 @@
-/*
- * kernel/time/sched_debug.c
+/* kernel/time/sched_debug.c
  *
  * Print the CFS rbtree
  *
@@ -10,11 +9,14 @@
  * published by the Free Software Foundation.
  */
 
+#include <linux/fs.h>			/* for sprintf */
 #include <linux/proc_fs.h>
 #include <linux/sched.h>
 #include <linux/seq_file.h>
 #include <linux/kallsyms.h>
 #include <linux/utsname.h>
+
+#define RECORDS 10000
 
 static DEFINE_SPINLOCK(sched_debug_lock);
 
@@ -372,10 +374,81 @@ static int sched_debug_show(struct seq_file *m, void *v)
 
 	return 0;
 }
+//For only Rq0, add more cases for more run cores
+static void rqDebug(struct seq_file *m, void *v)
+{
+  struct rq *rq0 = cpu_rq(0);
+  struct Entry e=rq0->record.entries[0];
+  
+  int pageleft=4096;
+  int logEntryLen;
+  //While memory remains for the proc entry
+  while (pageleft >= 200){
+    //Print the library for RQ0 --Change 4096 to 2048 if using two core
+    //Add another case for additional rQ
+    if (rq0->record.printer != rq0->record.count) {
+      char logEntry[200];
+     
+      
+      logEntryLen =
+	sprintf(logEntry, "%lld,%s,%lld,%c,%lld,%lld,%lld,%lld\n",
+		rq0->record.entries[rq0->record.printer].seqNum, /* long long */
+		rq0->record.entries[rq0->record.printer].name, /* str */
+		(long long) rq0->record.entries[rq0->record.printer].taskId, /* int */
+		rq0->record.entries[rq0->record.printer].eventType, /* char!! */
+		rq0->record.entries[rq0->record.printer].eventTime, /* times, in ns */
+		rq0->record.entries[rq0->record.printer].vrun,
+		rq0->record.entries[rq0->record.printer].sleep,
+		(long long) rq0->record.entries[rq0->record.printer].normPrio); /* int */
+      SEQ_printf(m,"%s", logEntry);
+      rq0->record.printer = (rq0->record.printer + 1) % RECORDS;
+    }
+    pageleft-=logEntryLen;      
+  }
+}
+
+static void rqRESET(struct seq_file *m, void *v)
+{
+  struct rq *rq0 = cpu_rq(0);
+
+ 
+  rq0->record.printer=0;
+  rq0->record.seqNum=0;
+  rq0->record.count=0;
+
+  int i=0;
+  for(i=0;i<RECORDS;i++){
+    struct Entry entry;
+          entry.taskId=0;
+	  int j=0;
+	  for (j=0;j<TASK_COMM_LEN;j++)
+	    entry.name[j]='0';
+	  entry.eventType='E';
+	  entry.dynamicP=0;
+	  entry.vrun=0;  
+	  entry.sleep=0;
+	  entry.eventTime=0;  
+          rq0->record.entries[i]=entry;
+	  entry.seqNum=0;
+  }
+  SEQ_printf(m,"---- ALL RECORDS ERASED ----\n");
+
+}
+
 
 static void sysrq_sched_debug_show(void)
 {
 	sched_debug_show(NULL, NULL);
+}
+
+static void sysrq_rqDebug(void)
+{
+	rqDebug(NULL, NULL);
+}
+
+static void sysrq_rqRESET(void)
+{
+	rqRESET(NULL, NULL);
 }
 
 static int sched_debug_open(struct inode *inode, struct file *filp)
@@ -383,8 +456,33 @@ static int sched_debug_open(struct inode *inode, struct file *filp)
 	return single_open(filp, sched_debug_show, NULL);
 }
 
+static int rq_open(struct inode *inode, struct file *filp)
+{
+	return single_open(filp, rqDebug, NULL);
+}
+
+
+static int hr_open(struct inode *inode, struct file *filp)
+{
+	return single_open(filp, rqRESET, NULL);
+}
+
 static const struct file_operations sched_debug_fops = {
 	.open		= sched_debug_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static const struct file_operations RQ_fops = {
+	.open		= rq_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static const struct file_operations HR_fops = {
+	.open		= hr_open,
 	.read		= seq_read,
 	.llseek		= seq_lseek,
 	.release	= single_release,
@@ -400,7 +498,34 @@ static int __init init_sched_debug_procfs(void)
 	return 0;
 }
 
+//This is my proc file system for the library
+static int __init init_RQ_procfs(void)
+{
+        struct proc_dir_entry *lib;
+
+        lib = proc_create("RQ_Debug", 0444, NULL, &RQ_fops);
+	if (!lib)
+		return -ENOMEM;
+	return 0;
+} 
+
+static int __init init_HR(void)
+{
+        struct proc_dir_entry *lib;
+
+        lib = proc_create("HARD_RESET", 0444, NULL, &HR_fops);
+	if (!lib)
+		return -ENOMEM;
+	return 0;
+} 
+
+
 __initcall(init_sched_debug_procfs);
+
+//My init calls
+__initcall(init_RQ_procfs);
+__initcall(init_HR);
+
 
 void proc_sched_show_task(struct task_struct *p, struct seq_file *m)
 {
@@ -506,3 +631,4 @@ void proc_sched_set_task(struct task_struct *p)
 	memset(&p->se.statistics, 0, sizeof(p->se.statistics));
 #endif
 }
+

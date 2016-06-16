@@ -84,6 +84,8 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/sched.h>
 
+#define RECORDS 10000
+
 /*
  * Convert user-nice values [ -20 ... 0 ... 19 ]
  * to static priority [ MAX_RT_PRIO..MAX_PRIO-1 ],
@@ -306,6 +308,42 @@ struct task_group root_task_group;
 
 #endif	/* CONFIG_CGROUP_SCHED */
 
+//Record pages
+struct Entry{  
+  //App name and process ID
+  char name[TASK_COMM_LEN];
+  pid_t taskId;
+
+  //Event time and what type of event it was
+  u64 eventTime; 
+  char eventType;
+
+  //Priority 
+  unsigned int dynamicP;
+  int prio;
+  int normPrio;
+  int rt_prio;
+
+  //Vrun is the total runtime of 
+  //Slice is the time slice (duh)
+  u64 vrun;
+  u64 sleep;
+  u64 slice;
+  
+  u64 seqNum;
+  };
+
+//The Collection
+struct Archive{
+  struct Entry entries[RECORDS];
+  int count;
+  int printer;
+  int seqNum;
+
+  
+};
+
+
 /* CFS-related fields in a runqueue */
 struct cfs_rq {
 	struct load_weight load;
@@ -452,7 +490,7 @@ static struct root_domain def_root_domain;
  * acquire operations must be ordered by ascending &runqueue.
  */
 struct rq {
-	/* runqueue lock: */
+        /* runqueue lock: */
 	raw_spinlock_t lock;
 
 	/*
@@ -476,7 +514,9 @@ struct rq {
 
 	struct cfs_rq cfs;
 	struct rt_rq rt;
-
+        struct Archive record;
+        
+  
 #ifdef CONFIG_FAIR_GROUP_SCHED
 	/* list of leaf cfs_rq on this cpu: */
 	struct list_head leaf_cfs_rq_list;
@@ -1810,6 +1850,38 @@ static void enqueue_task(struct rq *rq, struct task_struct *p, int flags)
 	update_rq_clock(rq);
 	sched_info_queued(p);
 	p->sched_class->enqueue_task(rq, p, flags);
+
+	if(rq->record.count==0 && rq->record.printer==0)
+	  rq->record.seqNum=0;
+
+	if(rq->record.count < RECORDS){
+	  struct Entry entry;
+          entry.taskId=p->pid;
+	  char i;
+	  for(i=0;i<16;i++)
+	    entry.name[i]=p->comm[i];
+
+	  entry.eventType='R';
+
+	  entry.rt_prio=p->rt_priority;
+	  entry.dynamicP=p->static_prio;
+	  entry.normPrio=p->normal_prio;
+	  entry.prio=p->prio;
+	  
+	  entry.vrun=p->se.sum_exec_runtime;
+	  entry.sleep=p->se.statistics.sum_sleep_runtime;  
+
+	  entry.eventTime=sched_clock();  
+	  entry.seqNum=rq->record.seqNum++;
+          rq->record.entries[rq->record.count]=entry;
+          rq->record.count++;
+ 
+	}
+
+        if(rq->record.count >= RECORDS){
+	  rq->record.count=0;
+
+	}
 }
 
 static void dequeue_task(struct rq *rq, struct task_struct *p, int flags)
@@ -1817,6 +1889,40 @@ static void dequeue_task(struct rq *rq, struct task_struct *p, int flags)
 	update_rq_clock(rq);
 	sched_info_dequeued(p);
 	p->sched_class->dequeue_task(rq, p, flags);
+	struct sched_entity *se = &p->se;
+	
+	if(rq->record.count==0 && rq->record.printer==0)
+	  rq->record.seqNum=0;
+
+	int k=rq->record.count;
+        if(k < RECORDS){
+	  struct Entry entry;
+	  entry.taskId=p->pid;
+	  char i;
+	  for(i=0;i<16;i++)
+	    entry.name[i]=p->comm[i];
+	  
+	  entry.eventType='B';
+	  
+	  entry.rt_prio=p->rt_priority;
+	  entry.dynamicP=p->static_prio;
+	  entry.normPrio=p->normal_prio;
+	  entry.prio=p->prio;
+
+	  entry.sleep=p->se.statistics.sum_sleep_runtime;
+	  entry.vrun=p->se.sum_exec_runtime;  
+	  
+	  entry.eventTime=sched_clock();  
+
+	  entry.seqNum=rq->record.seqNum++;
+	  rq->record.entries[k]=entry;
+          rq->record.count++; 
+	}
+
+        if(rq->record.count == RECORDS){
+	  rq->record.count=0;
+	  
+	}
 }
 
 /*
@@ -3677,7 +3783,8 @@ static u64 do_task_delta_exec(struct task_struct *p, struct rq *rq)
 		if ((s64)ns < 0)
 			ns = 0;
 	}
-
+	
+	
 	return ns;
 }
 
@@ -3690,7 +3797,7 @@ unsigned long long task_delta_exec(struct task_struct *p)
 	rq = task_rq_lock(p, &flags);
 	ns = do_task_delta_exec(p, rq);
 	task_rq_unlock(rq, p, &flags);
-
+	
 	return ns;
 }
 
@@ -3706,9 +3813,13 @@ unsigned long long task_sched_runtime(struct task_struct *p)
 	u64 ns = 0;
 
 	rq = task_rq_lock(p, &flags);
-	ns = p->se.sum_exec_runtime + do_task_delta_exec(p, rq);
-	task_rq_unlock(rq, p, &flags);
 
+	//the delta for execTime
+	u64 de=do_task_delta_exec(p, rq);
+
+	ns = p->se.sum_exec_runtime + de;
+	task_rq_unlock(rq, p, &flags);
+   
 	return ns;
 }
 
@@ -5860,6 +5971,7 @@ void show_state_filter(unsigned long state_filter)
 
 #ifdef CONFIG_SCHED_DEBUG
 	sysrq_sched_debug_show();
+	sysrq_rqDebug();
 #endif
 	read_unlock(&tasklist_lock);
 	/*
