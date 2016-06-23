@@ -84,7 +84,7 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/sched.h>
 
-#define RECORDS 10000
+#define RECORDS 16000
 
 /*
  * Convert user-nice values [ -20 ... 0 ... 19 ]
@@ -308,6 +308,8 @@ struct task_group root_task_group;
 
 #endif	/* CONFIG_CGROUP_SCHED */
 
+static struct proc_dir_entry *proc_entry;
+
 //Record pages
 struct Entry{  
   //App name and process ID
@@ -329,20 +331,18 @@ struct Entry{
   u64 vrun;
   u64 sleep;
   u64 slice;
-  
+ 
   u64 seqNum;
-  };
+};
 
 //The Collection
 struct Archive{
   struct Entry entries[RECORDS];
   int count;
   int printer;
-  int seqNum;
-
-  
+  u64 lastSeqNum;
+  u64 seqNum;
 };
-
 
 /* CFS-related fields in a runqueue */
 struct cfs_rq {
@@ -605,6 +605,7 @@ struct rq {
 	struct task_struct *wake_list;
 #endif
 };
+
 
 static DEFINE_PER_CPU_SHARED_ALIGNED(struct rq, runqueues);
 
@@ -1874,14 +1875,9 @@ static void enqueue_task(struct rq *rq, struct task_struct *p, int flags)
 	  entry.eventTime=sched_clock();  
 	  entry.seqNum=rq->record.seqNum++;
           rq->record.entries[rq->record.count]=entry;
-          rq->record.count++;
- 
-	}
+       	}
 
-        if(rq->record.count >= RECORDS){
-	  rq->record.count=0;
-
-	}
+	rq->record.count = (rq->record.count + 1) % RECORDS;
 }
 
 static void dequeue_task(struct rq *rq, struct task_struct *p, int flags)
@@ -1916,13 +1912,10 @@ static void dequeue_task(struct rq *rq, struct task_struct *p, int flags)
 
 	  entry.seqNum=rq->record.seqNum++;
 	  rq->record.entries[k]=entry;
-          rq->record.count++; 
 	}
 
-        if(rq->record.count == RECORDS){
-	  rq->record.count=0;
-	  
-	}
+        rq->record.count = (rq->record.count + 1) % RECORDS;
+
 }
 
 /*
@@ -8041,6 +8034,7 @@ static void init_cfs_rq(struct cfs_rq *cfs_rq, struct rq *rq)
 #ifndef CONFIG_64BIT
 	cfs_rq->min_vruntime_copy = cfs_rq->min_vruntime;
 #endif
+
 }
 
 static void init_rt_rq(struct rt_rq *rt_rq, struct rq *rq)
@@ -8134,9 +8128,9 @@ static void init_tg_rt_entry(struct task_group *tg, struct rt_rq *rt_rq,
 
 void __init sched_init(void)
 {
-	int i, j;
+        int i, j;
 	unsigned long alloc_size = 0, ptr;
-
+	
 #ifdef CONFIG_FAIR_GROUP_SCHED
 	alloc_size += 2 * nr_cpu_ids * sizeof(void **);
 #endif
@@ -8257,6 +8251,7 @@ void __init sched_init(void)
 #endif
 		init_rq_hrtick(rq);
 		atomic_set(&rq->nr_iowait, 0);
+	
 	}
 
 	set_load_weight(&init_task);

@@ -16,10 +16,10 @@
 #include <linux/kallsyms.h>
 #include <linux/utsname.h>
 
-#define RECORDS 10000
+#define RECORDS 16000
 
 static DEFINE_SPINLOCK(sched_debug_lock);
-
+static u64 lastPrintSeq=0;
 /*
  * This allows printing both to /proc/sched_debug and
  * to the console
@@ -378,18 +378,14 @@ static int sched_debug_show(struct seq_file *m, void *v)
 static void rqDebug(struct seq_file *m, void *v)
 {
   struct rq *rq0 = cpu_rq(0);
-  struct Entry e=rq0->record.entries[0];
-  
+    
   int pageleft=4096;
-  int logEntryLen;
+  int logEntryLen=0;
   //While memory remains for the proc entry
-  while (pageleft >= 200){
-    //Print the library for RQ0 --Change 4096 to 2048 if using two core
-    //Add another case for additional rQ
+  while (pageleft >= logEntryLen && (lastPrintSeq <= rq0->record.lastSeqNum)){
     if (rq0->record.printer != rq0->record.count) {
       char logEntry[200];
      
-      
       logEntryLen =
 	sprintf(logEntry, "%lld,%s,%lld,%c,%lld,%lld,%lld,%lld\n",
 		rq0->record.entries[rq0->record.printer].seqNum, /* long long */
@@ -401,7 +397,9 @@ static void rqDebug(struct seq_file *m, void *v)
 		rq0->record.entries[rq0->record.printer].sleep,
 		(long long) rq0->record.entries[rq0->record.printer].normPrio); /* int */
       SEQ_printf(m,"%s", logEntry);
+      lastPrintSeq=rq0->record.entries[rq0->record.printer].seqNum;
       rq0->record.printer = (rq0->record.printer + 1) % RECORDS;
+      
     }
     pageleft-=logEntryLen;      
   }
@@ -498,6 +496,82 @@ static int __init init_sched_debug_procfs(void)
 	return 0;
 }
 
+static void *rq_seq_start(struct seq_file *s, loff_t *pos)
+{
+  printk(KERN_DEBUG "FILE OPEN\n" );
+  struct rq *rq0 = cpu_rq(0);
+  rq0->record.lastSeqNum=rq0->record.seqNum;
+  if ((lastPrintSeq == rq0->record.seqNum)){
+    printk(KERN_DEBUG "NOTHING IS HAPPENING\n" );
+    return NULL;
+  }
+  else
+    {
+      printk(KERN_DEBUG "BEGIN STREAM OF TEXT %d \n",rq0->record.printer);
+      return 1;
+
+    }
+}
+static void *rq_seq_next(struct seq_file *s, void *v, loff_t *pos)
+{
+  printk(KERN_DEBUG "NEXT\n" );
+  struct rq *rq0 = cpu_rq(0);
+  rq0->record.lastSeqNum=rq0->record.seqNum;
+  if ((lastPrintSeq == rq0->record.seqNum)){
+    printk(KERN_DEBUG "EXIT\n" );
+    return NULL;
+  }
+  else
+    {
+      printk(KERN_DEBUG "RESUME %d \n",rq0->record.printer);
+      return 1;
+
+    }
+  }
+
+static void rq_seq_stop(struct seq_file *s, void *v)
+{
+  printk(KERN_DEBUG "IT STOPPED FOR SOME REASON\n" );
+  /* we don't need cleanup at the end of the sequence */
+}
+
+static int rq_seq_show(struct seq_file *s, void *v)
+{
+  printk(KERN_DEBUG "SHOULD HAVE RAN rqDebug\n" );
+  rqDebug(s,v);
+  return 0;
+}
+
+static struct seq_operations rq_seq_ops = {
+  .start = rq_seq_start,
+  .next  = rq_seq_next,
+  .stop  = rq_seq_stop,
+  .show  = rq_seq_show
+};
+
+static int rq0_open(struct inode *inode, struct file *file)
+{
+  return seq_open(file, &rq_seq_ops);
+}
+
+static struct file_operations rq_file_ops = {
+  .owner   = THIS_MODULE,
+  .open    = rq0_open,
+  .read    = seq_read,
+  .llseek  = seq_lseek,
+  .release = seq_release
+};
+
+static int __init init_seq_procfs(void)
+{
+        struct proc_dir_entry *lib;
+
+        lib = proc_create("SEQ_RQ", 0444, NULL, &rq_file_ops);
+	if (!lib)
+		return -ENOMEM;
+	return 0;
+} 
+
 //This is my proc file system for the library
 static int __init init_RQ_procfs(void)
 {
@@ -525,7 +599,7 @@ __initcall(init_sched_debug_procfs);
 //My init calls
 __initcall(init_RQ_procfs);
 __initcall(init_HR);
-
+__initcall(init_seq_procfs);
 
 void proc_sched_show_task(struct task_struct *p, struct seq_file *m)
 {
